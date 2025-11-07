@@ -4,7 +4,8 @@ from http import HTTPStatus
 from connector import TelegramConnector
 from telegram import get_telegram_client
 from timescale import get_timescale_client
-from flask import Flask, request, jsonify
+from flask import Flask, jsonify
+
 
 logging.getLogger().setLevel(logging.INFO)
 
@@ -12,6 +13,7 @@ app = Flask(__name__)
 
 telegram = get_telegram_client()
 timescale = get_timescale_client()
+
 
 @app.route("/")
 def run_connector():
