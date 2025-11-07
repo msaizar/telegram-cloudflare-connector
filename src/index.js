@@ -1,12 +1,12 @@
 /**
  * The Telegram Connector is a scheduled Cloudflare Worker that fetches messages from Telegram channels and stores them by running a container using `env.CONTAINER`
- * 
+ *
  * ## Best Practices
  * - Simplicity, reliability, and efficiency.
  * - Stick to JSDoc for specifications, documentation, and type definitions.
  * - Robust error handling and logging techniques with succinct messages. Wrapping each data processing stage in a try-catch block, validating all inputs and outputs, and using `INFO` and `ERROR` levels with detailed contextual information, such as processing stage, task name, etc.
  * - Concise code with minimal formatting and indentation, which prioritizes descriptive element naming and log messages over inline comments to achieve readability.
- * 
+ *
  * ## Additional Documentation
  *
  * ### Containers in Cloudflare Worker
@@ -30,34 +30,45 @@
  * ```
  */
 
-import { Container, getContainer } from "@cloudflare/containers"
-import { env } from "cloudflare:workers"
+import { Container, getContainer } from "@cloudflare/containers";
 
 export class MyContainer extends Container {
-  defaultPort = 8080
-  sleepAfter = "10s"
-
-  envVars = {
-    TELEGRAM_API_ID: env.TELEGRAM_API_ID,
-    TELEGRAM_API_HASH: env.TELEGRAM_API_HASH,
-    TELEGRAM_SESSION_STR: env.TELEGRAM_SESSION_STR,
-    TIMESCALE_CONNECTION: env.TIMESCALE_CONNECTION,
-  }
+	defaultPort = 8080;
+	sleepAfter = "10s";
 }
 
 export default {
-  async scheduled(ctx, env) {
-    try {
-      const url = "https://example.com/"
-      const containerInstance = getContainer(env.CONTAINER, "theOnlyOne")
-      console.log("Container instance created")
+	async scheduled(_ctx, env) {
+		try {
+			const containerInstance = getContainer(env.CONTAINER, "theOnlyOne");
 
-      await containerInstance.fetch(url)
-      return new Response("Success", { status: 200 })
-      
-    } catch (e) {
-      console.error("Error in scheduled handler:", e)
-      return new Response(e.message, { status: 500 })
-    }
-  },
-}
+			console.log("Container instance created");
+
+			await containerInstance.startAndWaitForPorts({
+				startOptions: {
+					envVars: {
+						TELEGRAM_API_ID: env.TELEGRAM_API_ID,
+						TELEGRAM_API_HASH: env.TELEGRAM_API_HASH,
+						TELEGRAM_SESSION_STR: env.TELEGRAM_SESSION_STR,
+						TIMESCALE_CONNECTION: env.TIMESCALE_CONNECTION,
+					},
+				},
+			});
+
+			const response = await containerInstance.fetch(
+				new Request("http://localhost:8080/"),
+			);
+			console.log("Container response status:", response.status);
+
+			if (!response.ok) {
+				const errorText = await response.text();
+				console.error("Container error response:", errorText);
+				return new Response(errorText, { status: response.status });
+			}
+			return new Response("Success", { status: 200 });
+		} catch (e) {
+			console.error("Error in scheduled handler:", e);
+			return new Response(e.message, { status: 500 });
+		}
+	},
+};
