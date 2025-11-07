@@ -1,0 +1,40 @@
+services:
+  timescaledb:
+    image: timescale/timescaledb:latest-pg16
+    container_name: telegram-connector-db
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: telegram_connector
+    ports:
+      - "5432:5432"
+    volumes:
+      - timescale_data:/var/lib/postgresql/data
+      - ./container/schema.sql:/docker-entrypoint-initdb.d/schema.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  connector:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: telegram-connector-app
+    env_file:
+      - .env.local
+    environment:
+      TIMESCALE_CONNECTION: postgresql://postgres:postgres@timescaledb:5432/telegram_connector?sslmode=disable
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./container/src:/app
+    command: ["gunicorn", "--reload", "-b", "0.0.0.0:8080", "--access-logfile", "-", "--error-logfile", "-", "--log-level", "info", "--capture-output", "main:app"]
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  timescale_data:

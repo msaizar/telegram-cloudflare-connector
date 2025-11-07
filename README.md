@@ -1,6 +1,61 @@
+# Telegram Cloudflare Connector
+
 This service runs on Cloudflare Workers with containers. It periodically retrieves new messages from Telegram and stores them in a Timescale database. Consecutive messages from the same author within the same channel are merged into a single message by concatenating their text and retaining the metadata of the last message.
 
-## Timescale Setup
+## Local Development
+
+### Quick Start
+
+1. **Copy local environment template:**
+
+   ```bash
+   cp .env.local.example .env.local
+   ```
+
+2. **Configure credentials** in `.env.local`:
+   - Set your Telegram API credentials (see [Obtaining Telegram Credentials](#obtaining-telegram-credentials-for-testing))
+   - Database connection string is automatically configured by docker-compose
+
+3. **Start local services:**
+
+   ```bash
+   docker-compose up -d
+   ```
+
+   This starts:
+   - TimescaleDB on `localhost:5432`
+   - Flask connector service on `localhost:8080`
+
+4. **Trigger the connector:**
+
+   ```bash
+   curl http://localhost:8080/
+   ```
+
+5. **View logs:**
+
+   ```bash
+   docker-compose logs -f connector
+   ```
+
+6. **Stop services:**
+
+   ```bash
+   docker-compose down
+   ```
+
+### Local Database Access
+
+Connect to your local TimescaleDB:
+
+```bash
+psql postgresql://postgres:postgres@localhost:5432/telegram_connector
+```
+
+## Production Setup (Cloudflare)
+
+### Timescale Setup
+
 [Create](https://console.cloud.timescale.com/signup) a Timescale database with their 30 days free trial. You will need to add connection string to `TIMESCALE_CONNECTION` secret.
 
 Use queries below to set up schema.
@@ -43,7 +98,7 @@ Use dedicated account for testing. Follow [this guide](https://docs.telethon.dev
 
 Then generate session string using [container/scripts/generate_session_str.py](container/scripts/generate_session_str.py). Prior to executing the script, make sure to install [telethon](https://docs.telethon.dev/en/stable/basic/installation.html#installation).
 
-The script will request input for the `api_id` and `api_hash`. Additionally, it will ask for the phone number associated with the account, and a verification code will be sent to that number. You will find session string printed out in your terminal. 
+The script will request input for the `api_id` and `api_hash`. Additionally, it will ask for the phone number associated with the account, and a verification code will be sent to that number. You will find session string printed out in your terminal.
 
 Then you can add these three as Cloudflare Secrets: `TELEGRAM_API_ID`, `TELEGRAM_API_HASH` and `TELEGRAM_SESSION_STR`.
 

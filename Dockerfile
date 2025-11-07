@@ -9,8 +9,8 @@ COPY container/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy project code
-COPY container/src . 
+COPY container/src .
 
 EXPOSE 8080
 
-CMD ["gunicorn", "-b", "0.0.0.0:8080", "main:app"]
+CMD ["gunicorn", "-b", "0.0.0.0:8080", "--access-logfile", "-", "--error-logfile", "-", "--log-level", "info", "--capture-output", "main:app"]
