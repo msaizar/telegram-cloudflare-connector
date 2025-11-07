@@ -386,6 +386,9 @@ class TelegramConnector:
         if not glued_messages:
             return
 
+        # Disconnect Telegram client before database operations to avoid transaction conflicts
+        await self.telegram.disconnect()
+
         self.timescale.insert_messages_batch(glued_messages)
 
     async def _start(self):
