@@ -36,5 +36,23 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  scripts:
+    build:
+      context: .
+      dockerfile_inline: |
+        FROM python:3.9-slim
+        WORKDIR /app
+        COPY container/requirements.txt .
+        RUN pip install --no-cache-dir -r requirements.txt
+        COPY container /app
+        ENV PYTHONPATH=/app/src:/app
+    container_name: telegram-connector-scripts
+    profiles: [tools]
+    env_file:
+      - .env.local
+    volumes:
+      - ./container:/app
+    working_dir: /app
+
 volumes:
   timescale_data:

@@ -13,7 +13,7 @@ This service runs on Cloudflare Workers with containers. It periodically retriev
    ```
 
 2. **Configure credentials** in `.env.local`:
-   - Set your Telegram API credentials (see [Obtaining Telegram Credentials](#obtaining-telegram-credentials-for-testing))
+   - Set your Telegram API credentials (see [Obtaining Telegram Credentials for testing](#obtaining-telegram-credentials-for-testing))
    - Database connection string is automatically configured by docker-compose
 
 3. **Start local services:**
@@ -43,14 +43,6 @@ This service runs on Cloudflare Workers with containers. It periodically retriev
    ```bash
    docker-compose down
    ```
-
-### Local Database Access
-
-Connect to your local TimescaleDB:
-
-```bash
-psql postgresql://postgres:postgres@localhost:5432/telegram_connector
-```
 
 ## Production Setup (Cloudflare)
 
@@ -94,13 +86,57 @@ END $$;
 
 ## Obtaining Telegram Credentials for testing
 
-Use dedicated account for testing. Follow [this guide](https://docs.telethon.dev/en/stable/basic/signing-in.html#signing-in) to register a Telegram application and save your `api_id` and `api_hash`.
+### 1. Get Telegram API Credentials
 
-Then generate session string using [container/scripts/generate_session_str.py](container/scripts/generate_session_str.py). Prior to executing the script, make sure to install [telethon](https://docs.telethon.dev/en/stable/basic/installation.html#installation).
+Use a dedicated account for testing. Follow [this guide](https://docs.telethon.dev/en/stable/basic/signing-in.html#signing-in) to register a Telegram application and obtain your `api_id` and `api_hash`.
 
-The script will request input for the `api_id` and `api_hash`. Additionally, it will ask for the phone number associated with the account, and a verification code will be sent to that number. You will find session string printed out in your terminal.
+### 2. Add API Credentials to `.env.local`
 
-Then you can add these three as Cloudflare Secrets: `TELEGRAM_API_ID`, `TELEGRAM_API_HASH` and `TELEGRAM_SESSION_STR`.
+Add your Telegram API credentials to `.env.local`:
+
+```bash
+TELEGRAM_API_ID=your_api_id_here
+TELEGRAM_API_HASH=your_api_hash_here
+```
+
+### 3. Generate Session String
+
+Run the session string generator script using docker-compose:
+
+```bash
+docker-compose run --rm scripts ./scripts/generate_session_str.py
+```
+
+The script will:
+
+- Automatically load your API credentials from `.env.local`
+- Prompt for your phone number
+- Send a verification code to your phone
+- Output the session string as JSON
+
+### 4. Add Session String to `.env.local`
+
+Copy the `session_str` value from the script output and add it to `.env.local`:
+
+```bash
+TELEGRAM_SESSION_STR=your_session_string_here
+```
+
+### 5. Restart Services
+
+After updating `.env.local`, restart the services to load the new credentials:
+
+```bash
+docker-compose restart
+```
+
+### 6. Deploy to Cloudflare
+
+Add these three values as Cloudflare Secrets:
+
+- `TELEGRAM_API_ID`
+- `TELEGRAM_API_HASH`
+- `TELEGRAM_SESSION_STR`
 
 ## Useful Resources
 

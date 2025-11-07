@@ -1,13 +1,19 @@
+#!/usr/bin/env python
 from os import system, name
-import getpass
 import json
 
 from telethon.sync import TelegramClient
 from telethon.sessions import StringSession
 
+from src import env
 
-api_id = getpass.getpass("Enter your api_id: ")
-api_hash = getpass.getpass("Enter your api_hash: ")
+
+api_id = env.TELEGRAM_API_ID
+api_hash = env.TELEGRAM_API_HASH
+
+if not api_id or not api_hash:
+    print("Error: TELEGRAM_API_ID and TELEGRAM_API_HASH must be set in .env.local")
+    exit(1)
 
 
 def clear_screen():
