@@ -5,10 +5,13 @@ from urllib import request
 import os
 import re
 import jsonschema
+import asyncio
+import env
 
 from jsonschema.exceptions import ValidationError, SchemaError
 from bs4 import BeautifulSoup
 from telethon import TelegramClient
+from telethon.errors import FloodWaitError
 from telethon.tl.functions.messages import GetHistoryRequest
 
 from timescale import TimescaleClient
@@ -18,13 +21,21 @@ class UserNotLoggedIn(Exception):
     pass
 
 
+STYLE_URL_PATTERN = re.compile(
+    r"background-image:\s*url\('([^']{1,500})'\)", re.IGNORECASE
+)
+
+MAX_GLUED_TEXT_LENGTH = 20000  # 20KB total for glued messages
+
+
 class TelegramConnector:
-    def __init__(
-        self,
-        timescale: TimescaleClient,
-        telegram: TelegramClient
-    ):
-        self.event_loop = get_event_loop()
+    def __init__(self, timescale: TimescaleClient, telegram: TelegramClient):
+        try:
+            self.event_loop = get_event_loop()
+        except RuntimeError:
+            # No event loop in current thread, create a new one
+            self.event_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self.event_loop)
 
         self.timescale = timescale
         self.telegram = telegram
@@ -44,7 +55,7 @@ class TelegramConnector:
         GROUP BY source_channel_id;
         """
         try:
-            with self.timescale.connection.cursor() as cur:
+            with self.timescale.get_cursor() as cur:
                 cur.execute(sql)
                 rows = cur.fetchall()
 
@@ -60,7 +71,10 @@ class TelegramConnector:
 
     def _get_file_url_from_web_preview(self, url: str, type: str):
         try:
-            web_preview = request.urlopen(url).read()
+            # Fetch with timeout to prevent hanging
+            with request.urlopen(url, timeout=10) as response:
+                web_preview = response.read()
+
             soup_preview = BeautifulSoup(web_preview, "html.parser")
 
             if type == "video":
@@ -72,13 +86,20 @@ class TelegramConnector:
                         return source
 
             if type == "image":
-                target_element = soup_preview.find(class_="tgme_widget_message_photo_wrap")
+                target_element = soup_preview.find(
+                    class_="tgme_widget_message_photo_wrap"
+                )
 
                 if target_element:
                     style = target_element.get("style")
                     if style:
-                        url = re.search(r"background-image:\s*url\('([^']+)'", style).group(1)
-                        return url
+                        match = STYLE_URL_PATTERN.search(style)
+                        if match:
+                            extracted_url = match.group(1)
+                            return extracted_url
+                        else:
+                            logging.warning("No URL found in style attribute")
+                            return None
 
             if type == "audio":
                 target_element = soup_preview.find(name="audio")
@@ -88,13 +109,14 @@ class TelegramConnector:
                     if source:
                         return source
 
-        except Exception:
+        except Exception as e:
+            logging.error(f"Failed to fetch web preview from {url}: {e}")
             return None
 
     def _get_media_elements(self, entity, item):
         media = []
 
-        if not hasattr(entity, "username"):
+        if not hasattr(entity, "username") or not entity.username:
             return media
 
         post_preview = f"https://t.me/{entity.username}/{item.id}?embed=1&mode=tme"
@@ -131,7 +153,9 @@ class TelegramConnector:
         if item.video_note:
             url = self._get_file_url_from_web_preview(post_preview, "video")
             if url:
-                media.append({"id": str(item.video_note.id), "type": "video", "url": url})
+                media.append(
+                    {"id": str(item.video_note.id), "type": "video", "url": url}
+                )
 
         return media
 
@@ -143,7 +167,10 @@ class TelegramConnector:
                 return
 
             source_entity = await self.telegram.get_entity(source_id)
-            is_bot_message = getattr(source_entity, 'bot', False) or getattr(message_item, 'via_bot_id', None) is not None
+            is_bot_message = (
+                getattr(source_entity, "bot", False)
+                or getattr(message_item, "via_bot_id", None) is not None
+            )
 
             if is_bot_message:
                 return
@@ -155,12 +182,14 @@ class TelegramConnector:
                 return
 
             source_user_id = str(source_entity.id)
-            first_name = getattr(source_entity, 'first_name', '')
-            last_name = getattr(source_entity, 'last_name', '')
+            first_name = getattr(source_entity, "first_name", "")
+            last_name = getattr(source_entity, "last_name", "")
             source_user_name = f"{first_name} {last_name}".strip()
 
             if not source_user_name:
                 source_user_name = source_entity.username or dialog_entity.title
+
+            dialog_entity_id = str(dialog_entity.id)
 
             message_data = {
                 "timestamp": message_item.date.isoformat(),
@@ -169,12 +198,15 @@ class TelegramConnector:
                 "source": {
                     "account_id": str(self.telegram.api_id),
                     "platform": "telegram",
-                    "channel": {"id": str(dialog_entity.id), "name": dialog_entity.title},
+                    "channel": {"id": dialog_entity_id, "name": dialog_entity.title},
                 },
             }
 
+            # Add username URL if present
             if hasattr(dialog_entity, "username") and dialog_entity.username:
-                message_data["message"]["url"] = f"https://t.me/{dialog_entity.username}"
+                message_data["message"][
+                    "url"
+                ] = f"https://t.me/{dialog_entity.username}"
 
             if message_item.geo is not None:
                 message_data["geo_coords"] = {
@@ -194,11 +226,15 @@ class TelegramConnector:
             return message_data
 
         except ValidationError as validation_error:
-            logging.error(f"Message validation failed: {validation_error}")
+            logging.error(
+                f"Message validation failed for message ID {message_item.id}: {validation_error}"
+            )
         except SchemaError as schema_error:
             logging.error(f"Schema error: {schema_error}")
         except Exception as general_error:
-            logging.info(f"The message is not valid: {general_error}. Skipping...")
+            logging.warning(
+                f"Failed to process message {message_item.id}: {general_error}"
+            )
 
     def _glue_same_user_messages(self, messages: list):
         user_messages = {}
@@ -207,7 +243,9 @@ class TelegramConnector:
         for message in messages:
             user_id = message["user"]["id"]
             channel_id = message["source"]["channel"]["id"]
-            referenced_post_id = message["source"].get("referenced_post", {}).get("id", "")
+            referenced_post_id = (
+                message["source"].get("referenced_post", {}).get("id", "")
+            )
             key = (user_id, channel_id, referenced_post_id)
 
             if key not in user_messages:
@@ -217,14 +255,22 @@ class TelegramConnector:
 
         for key, messages in user_messages.items():
             sorted_messages = sorted(messages, key=lambda x: x["timestamp"])
-            glued_text = " ".join([msg["message"]["text"] for msg in sorted_messages])
+
+            texts = [msg["message"]["text"] for msg in sorted_messages]
+            glued_text = " ".join(texts)
+
+            if len(glued_text) > MAX_GLUED_TEXT_LENGTH:
+                glued_text = glued_text[:MAX_GLUED_TEXT_LENGTH]
+                logging.warning(
+                    f"Glued text exceeded max length, truncated to {MAX_GLUED_TEXT_LENGTH} chars"
+                )
 
             glued_text_without_unicode = glued_text.encode("ascii", "ignore").decode()
             if len(glued_text_without_unicode) < 20:
                 continue
 
             last_message = sorted_messages[-1]
-            last_message["message"]["text"] = glued_text[:512].strip()
+            last_message["message"]["text"] = glued_text.strip()
 
             all_media = []
 
@@ -246,6 +292,7 @@ class TelegramConnector:
     async def _get_channel_messages(self):
         channel_messages = []
         last_msg_ids = self._get_last_msg_ids()
+        processed_count = 0
 
         async for dialog in self.telegram.iter_dialogs(archived=False):
             try:
@@ -253,47 +300,92 @@ class TelegramConnector:
                 if dialog.is_user:
                     continue
 
+                # Rate limiting: Stop if max channels reached
+                if processed_count >= env.MAX_CHANNELS_PER_RUN:
+                    logging.warning(
+                        f"Reached max channels limit ({env.MAX_CHANNELS_PER_RUN}). Stopping to prevent rate limit."
+                    )
+                    break
+
                 entity = dialog.entity
                 entity_id = str(entity.id)
 
                 last_msg_id = last_msg_ids.get(entity_id, 0)
                 limit_value = 20 if last_msg_id == 0 else 0
-                
+
                 # Skip if the message is not newer than the last processed one
                 if dialog.message.id <= last_msg_id:
                     continue
 
-                logging.info(f"Obtaining chat history for '{entity_id}' - '{dialog.name}'...")
-                history = await self.telegram(
-                    GetHistoryRequest(
-                        peer=entity,
-                        limit=limit_value,
-                        offset_id=0,
-                        offset_date=None,
-                        add_offset=0,
-                        max_id=0,
-                        min_id=last_msg_id,
-                        hash=0,
-                    )
+                # Rate limiting: Add delay between API calls
+                if processed_count > 0:
+                    await asyncio.sleep(env.API_CALL_DELAY)
+
+                logging.info(
+                    f"Obtaining chat history for '{entity_id}' - '{dialog.name}'..."
                 )
+
+                # Handle FloodWaitError with retry logic
+                try:
+                    history = await self.telegram(
+                        GetHistoryRequest(
+                            peer=entity,
+                            limit=limit_value,
+                            offset_id=0,
+                            offset_date=None,
+                            add_offset=0,
+                            max_id=0,
+                            min_id=last_msg_id,
+                            hash=0,
+                        )
+                    )
+                except FloodWaitError as flood_error:
+                    wait_seconds = flood_error.seconds
+                    if wait_seconds > env.MAX_FLOOD_WAIT:
+                        logging.error(
+                            f"FloodWait too long ({wait_seconds}s > {env.MAX_FLOOD_WAIT}s). Skipping channel."
+                        )
+                        continue
+                    logging.warning(
+                        f"FloodWait: Sleeping for {wait_seconds} seconds..."
+                    )
+                    await asyncio.sleep(wait_seconds)
+                    # Retry after waiting
+                    history = await self.telegram(
+                        GetHistoryRequest(
+                            peer=entity,
+                            limit=limit_value,
+                            offset_id=0,
+                            offset_date=None,
+                            add_offset=0,
+                            max_id=0,
+                            min_id=last_msg_id,
+                            hash=0,
+                        )
+                    )
 
                 # Process messages in ascending order
                 for item in reversed(history.messages):
                     message = await self._process_dialog_message(entity, item)
                     message and channel_messages.append(message)
 
+                processed_count += 1
+
             except Exception as err:
-                logging.info(f"Something went wrong: {str(err)}")
+                logging.error(f"Error processing dialog '{dialog.name}': {str(err)}")
+                continue
 
         if not channel_messages:
             return
 
         glued_messages = self._glue_same_user_messages(channel_messages)
-        logging.info(f"Found {len(channel_messages)} messages, compressed to {len(glued_messages)} messages")
+        logging.info(
+            f"Found {len(channel_messages)} messages, compressed to {len(glued_messages)} messages"
+        )
 
         if not glued_messages:
             return
-        
+
         self.timescale.insert_messages_batch(glued_messages)
 
     async def _start(self):
