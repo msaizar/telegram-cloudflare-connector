@@ -14,11 +14,27 @@ class TimescaleClient:
 
     def _connect(self):
         try:
-            self.connection = psycopg2.connect(self.connection_url)
+            self.connection = psycopg2.connect(
+                self.connection_url,
+                connect_timeout=env.DB_CONNECT_TIMEOUT,
+                options=f"-c statement_timeout={env.DB_STATEMENT_TIMEOUT}",
+            )
             self.connection.autocommit = True
         except Exception as e:
             logging.error(f"Unable to connect to TimescaleDB: {e}")
             raise
+
+    def _ensure_connection(self):
+        try:
+            if self.connection is None or self.connection.closed:
+                self._connect()
+        except Exception as e:
+            logging.error(f"Failed to ensure connection: {type(e).__name__}")
+            raise
+
+    def get_cursor(self):
+        self._ensure_connection()
+        return self.connection.cursor()
 
     def insert_messages_batch(self, messages: List[Dict]):
         sql_insert_unique_messages = """
@@ -42,16 +58,20 @@ class TimescaleClient:
         ON CONFLICT (timestamp, platform_name, platform_message_id) DO NOTHING;
         """
 
-        with self.connection.cursor() as cursor:
-            try:
+        try:
+            self._ensure_connection()
+            self.connection.autocommit = False
+
+            with self.connection.cursor() as cursor:
                 unique_message_values = [
                     (msg["message"]["text"], None) for msg in messages
                 ]
 
                 # Insert unique messages
-                execute_values(cursor, sql_insert_unique_messages, unique_message_values)
+                execute_values(
+                    cursor, sql_insert_unique_messages, unique_message_values
+                )
 
-                # Fetch message IDs for unique messages
                 unique_message_contents = tuple(
                     [msg["message"]["text"] for msg in messages]
                 )
@@ -59,12 +79,18 @@ class TimescaleClient:
                 unique_message_map = dict(cursor.fetchall())
 
                 message_feed_values = []
-                failed_rows = [] # List to store any rows that fail
+                failed_rows = []  # List to store any rows that fail
 
                 for msg in messages:
                     try:
                         message_text = msg["message"]["text"]
-                        unique_message_id = unique_message_map[message_text]
+                        unique_message_id = unique_message_map.get(message_text)
+
+                        if unique_message_id is None:
+                            logging.warning(
+                                f"No unique_message_id found for message {msg['message']['id']}"
+                            )
+                            continue
 
                         message_feed_data = (
                             msg["timestamp"],
@@ -82,34 +108,39 @@ class TimescaleClient:
                         message_feed_values.append(message_feed_data)
 
                     except Exception as row_error:
-                        failed_rows.append((msg, str(row_error)))
+                        failed_rows.append(
+                            (msg["message"]["id"], type(row_error).__name__)
+                        )
                         logging.error(
-                            f"Failed to process row for message {msg['message']['id']}: {row_error}"
+                            f"Failed to process row for message {msg['message']['id']}: {type(row_error).__name__}"
                         )
 
                 if message_feed_values:
                     execute_values(cursor, sql_insert_message_feed, message_feed_values)
 
                 self.connection.commit()
-                logging.info("Batch inserted unique messages and message feed.")
+                logging.info(
+                    f"Batch inserted {len(message_feed_values)} messages successfully."
+                )
 
                 if failed_rows:
                     logging.warning(
-                        f"Failed to process {len(failed_rows)} rows. Details: {failed_rows}"
+                        f"Failed to process {len(failed_rows)} rows out of {len(messages)}."
                     )
 
-            except Exception as e:
-                self.connection.rollback()
-                logging.error(f"Failed to batch insert messages: {e}")
-                
-            finally:
-                self.close()
-
-    def close(self):
-        if self.connection:
-            self.connection.close()
+        except Exception as e:
+            if self.connection:
+                try:
+                    self.connection.rollback()
+                except Exception as rollback_error:
+                    logging.error(f"Rollback failed: {rollback_error}")
+            logging.error(f"Failed to batch insert messages: {e}")
+            raise
 
 
 def get_timescale_client():
+    if not env.TIMESCALE_CONNECTION:
+        raise ValueError("TIMESCALE_CONNECTION environment variable is required")
+
     timescale_connection_url = env.TIMESCALE_CONNECTION
     return TimescaleClient(timescale_connection_url)
