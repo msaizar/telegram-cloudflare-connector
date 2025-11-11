@@ -31,56 +31,28 @@
  */
 
 import { Container, getContainer } from "@cloudflare/containers";
+import { env } from "cloudflare:workers";
 
 export class MyContainer extends Container {
 	defaultPort = 8080;
 	sleepAfter = "10s";
 
-	onStart() {
-		console.log("Container started successfully");
-	}
-
-	onError(error) {
-		console.error("Container error occurred:");
-		console.error("  Error type:", error.constructor.name);
-		console.error("  Error message:", error.message);
-		if (error.stack) {
-			console.error("  Stack trace:", error.stack);
-		}
-		if (error.exitCode !== undefined) {
-			console.error("  Exit code:", error.exitCode);
-		}
-	}
+	envVars = {
+		TELEGRAM_API_ID: env.TELEGRAM_API_ID,
+		TELEGRAM_API_HASH: env.TELEGRAM_API_HASH,
+		TELEGRAM_SESSION_STR: env.TELEGRAM_SESSION_STR,
+		TIMESCALE_CONNECTION: env.TIMESCALE_CONNECTION,
+	};
 }
 
 export default {
 	async scheduled(_ctx, env) {
 		try {
+			const url = "http://localhost:8080/connector";
 			const containerInstance = getContainer(env.CONTAINER, "theOnlyOne");
-
 			console.log("Container instance created");
 
-			await containerInstance.startAndWaitForPorts({
-				startOptions: {
-					envVars: {
-						TELEGRAM_API_ID: env.TELEGRAM_API_ID,
-						TELEGRAM_API_HASH: env.TELEGRAM_API_HASH,
-						TELEGRAM_SESSION_STR: env.TELEGRAM_SESSION_STR,
-						TIMESCALE_CONNECTION: env.TIMESCALE_CONNECTION,
-					},
-				},
-			});
-
-			const response = await containerInstance.fetch(
-				new Request("http://localhost:8080/connector"),
-			);
-			console.log("Container response status:", response.status);
-
-			if (!response.ok) {
-				const errorText = await response.text();
-				console.error("Container error response:", errorText);
-				return new Response(errorText, { status: response.status });
-			}
+			await containerInstance.fetch(url);
 			return new Response("Success", { status: 200 });
 		} catch (e) {
 			console.error("Error in scheduled handler:", e);
