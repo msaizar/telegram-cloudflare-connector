@@ -40,7 +40,7 @@ yarn-error.log*
 
 # Cloudflare
 .wrangler/
-
+.dev.vars
 # IDEs
 .vscode/
 .idea/

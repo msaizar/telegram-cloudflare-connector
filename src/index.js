@@ -35,6 +35,22 @@ import { Container, getContainer } from "@cloudflare/containers";
 export class MyContainer extends Container {
 	defaultPort = 8080;
 	sleepAfter = "10s";
+
+	onStart() {
+		console.log("Container started successfully");
+	}
+
+	onError(error) {
+		console.error("Container error occurred:");
+		console.error("  Error type:", error.constructor.name);
+		console.error("  Error message:", error.message);
+		if (error.stack) {
+			console.error("  Stack trace:", error.stack);
+		}
+		if (error.exitCode !== undefined) {
+			console.error("  Exit code:", error.exitCode);
+		}
+	}
 }
 
 export default {
@@ -56,7 +72,7 @@ export default {
 			});
 
 			const response = await containerInstance.fetch(
-				new Request("http://localhost:8080/"),
+				new Request("http://localhost:8080/connector"),
 			);
 			console.log("Container response status:", response.status);
 
